@@ -1,114 +1,140 @@
 package hagg.philip.messagequeueserver.entity;
 
+import hagg.philip.messagequeueserver.entity.QueueEntity;
+import hagg.philip.messagequeueserver.entity.WriteAndReadRepository;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Component;
 
 import java.io.BufferedReader;
-import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.time.Instant;
-import java.util.Arrays;
 import java.util.Base64;
-import java.util.Objects;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.Consumer;
+import java.util.Comparator;
+import java.util.Optional;
+import java.util.stream.Stream;
 
 @Component
 public class WriteAheadLogWriteAndReadRepository implements WriteAndReadRepository {
     private final ApplicationEventPublisher applicationEventPublisher;
 
-    private final Path FILESTORE = Path.of("src", "main", "java", "hagg", "philip", "messagequeueserver", "domain", "filestore");
+    private Path filestore = Path.of("src", "main", "java", "hagg", "philip", "messagequeueserver", "domain", "filestore");
 
+    private long MAX_SEGMENT_SIZE = 1024; // 1 KB
+    private static final String SEGMENT_FILE_EXTENSION = ".log";
     private static final String DELIMITER = "::";
     private static final Base64.Encoder ENCODER = Base64.getEncoder();
     private static final Base64.Decoder DECODER = Base64.getDecoder();
-
 
     public WriteAheadLogWriteAndReadRepository(ApplicationEventPublisher applicationEventPublisher) {
         this.applicationEventPublisher = applicationEventPublisher;
     }
 
+
     @Override
     public QueueEntity read(String topic) {
-        Path topicPath = FILESTORE.resolve(topic);
-        File topicFolder = topicPath.toFile();
-
-        if (!topicFolder.exists() || !topicFolder.isDirectory()) {
+        Path topicPath = filestore.resolve(topic);
+        if (!Files.exists(topicPath)) {
             return null;
         }
 
-        File[] files = topicFolder.listFiles();
-        AtomicReference<QueueEntity> entityRef = new AtomicReference<>();
+        try (Stream<Path> files = Files.list(topicPath)) {
+            Optional<Path> oldestSegment = files
+                .filter(p -> p.toString().endsWith(SEGMENT_FILE_EXTENSION))
+                .min(Comparator.comparing(Path::getFileName));
 
-        Arrays.stream(Objects.requireNonNull(files))
-            .filter(File::isFile)
-            .filter(File::canRead)
-            .findFirst()
-            .ifPresent(file -> {
-                try (BufferedReader reader = Files.newBufferedReader(file.toPath())) {
+            if (oldestSegment.isPresent()) {
+                try (BufferedReader reader = Files.newBufferedReader(oldestSegment.get())) {
                     String firstLine = reader.readLine();
                     if (firstLine != null && !firstLine.isBlank()) {
-                        entityRef.set(deserialize(firstLine));
+                        return deserialize(firstLine);
                     }
-                } catch (IOException e) {
-                    System.err.println("Error reading file: " + file.getPath());
-                    e.printStackTrace();
-                } catch (Exception e) {
-                    System.err.println("Failed to parse line: " + e.getMessage());
-                    e.printStackTrace();
                 }
-            });
-        return entityRef.get();
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+        return null;
     }
+
 
     @Override
     public void write(QueueEntity entity) {
-        Path topicPath = FILESTORE.resolve(entity.topic());
-        File topicFolder = topicPath.toFile();
+        try {
+            Path topicPath = filestore.resolve(entity.topic());
+            Files.createDirectories(topicPath); // Ensure directory exists
 
-        if (!topicFolder.exists()) {
-            if (!topicFolder.mkdirs()) {
-                System.err.println("Could not create directory: " + topicPath);
-                storeForRetry(entity).run();
-                return;
-            }
+            String newRow = serialize(entity);
+            byte[] newRowBytes = newRow.getBytes();
+
+            Path activeSegment = getOrCreateActiveSegment(topicPath, newRowBytes.length);
+
+            Files.write(activeSegment, (newRow + System.lineSeparator()).getBytes(), StandardOpenOption.APPEND);
+
+        } catch (IOException e) {
+            e.printStackTrace();
+            storeForRetry(entity).run();
         }
-
-        File[] files = topicFolder.listFiles();
-        Arrays.stream(Objects.requireNonNull(files))
-            .filter(File::isFile)
-            .filter(File::canWrite)
-            .findFirst()
-            .ifPresentOrElse(
-                save(entity),
-                storeForRetry(entity)
-            );
     }
 
-    public QueueEntity deserialize(String line) {
+    private Path getOrCreateActiveSegment(Path topicPath, long messageSize) throws IOException {
+        Optional<Path> latestSegmentOpt = findLatestSegment(topicPath);
+
+        if (latestSegmentOpt.isEmpty()) {
+            return createNewSegment(topicPath, 0L);
+        }
+
+        Path latestSegment = latestSegmentOpt.get();
+        if (Files.size(latestSegment) + messageSize <= MAX_SEGMENT_SIZE) {
+            return latestSegment;
+        }
+
+        long nextSegmentId = getSegmentId(latestSegment) + 1;
+        return createNewSegment(topicPath, nextSegmentId);
+    }
+
+    private Path createNewSegment(Path topicPath, long segmentId) throws IOException {
+        String segmentName = String.format("%020d" + SEGMENT_FILE_EXTENSION, segmentId);
+        Path newSegmentPath = topicPath.resolve(segmentName);
+        return Files.createFile(newSegmentPath);
+    }
+
+    private Optional<Path> findLatestSegment(Path topicPath) throws IOException {
+        if (!Files.exists(topicPath)) {
+            return Optional.empty();
+        }
+        try (Stream<Path> files = Files.list(topicPath)) {
+            return files
+                .filter(p -> p.toString().endsWith(SEGMENT_FILE_EXTENSION))
+                .max(Comparator.comparing(Path::getFileName));
+        }
+    }
+
+    private long getSegmentId(Path segmentPath) {
+        String fileName = segmentPath.getFileName().toString();
+        String segmentIdStr = fileName.replace(SEGMENT_FILE_EXTENSION, "");
+        return Long.parseLong(segmentIdStr);
+    }
+
+    private QueueEntity deserialize(String line) {
         String[] parts = line.split(DELIMITER, -1);
         if (parts.length != 7) {
             throw new IllegalArgumentException("Invalid log entry format. Expected 7 parts, but got " + parts.length);
         }
-
         byte[] key = parts[0].isEmpty() ? null : DECODER.decode(parts[0]);
         byte[] value = DECODER.decode(parts[1]);
-
         String topic = parts[2];
         Integer partition = Integer.parseInt(parts[3]);
         long offset = Long.parseLong(parts[4]);
         Instant timestamp = Instant.ofEpochMilli(Long.parseLong(parts[5]));
-
         return new QueueEntity(key, value, topic, partition, offset, timestamp);
     }
 
-    public String serialize(QueueEntity entity) {
+    private String serialize(QueueEntity entity) {
         String keyBase64 = entity.key() != null ? ENCODER.encodeToString(entity.key()) : "";
         String valueBase64 = ENCODER.encodeToString(entity.value());
-
         return String.join(DELIMITER,
             keyBase64,
             valueBase64,
@@ -122,23 +148,8 @@ public class WriteAheadLogWriteAndReadRepository implements WriteAndReadReposito
 
     private Runnable storeForRetry(QueueEntity entity) {
         return () -> {
-            System.out.println("No writable segment file found for topic: " + entity.topic() + ". Publishing for retry.");
+            System.out.println("Failed to write to segment file for topic: " + entity.topic() + ". Publishing for retry.");
             applicationEventPublisher.publishEvent(entity);
-        };
-    }
-
-    private Consumer<File> save(QueueEntity entity) {
-        return file -> {
-            file.setWritable(false);
-            try {
-                Path path = file.toPath();
-                String newRow = serialize(entity);
-                Files.write(path, (newRow + System.lineSeparator()).getBytes(), StandardOpenOption.APPEND);
-            } catch (IOException e) {
-                e.printStackTrace();
-            } finally {
-                file.setWritable(true);
-            }
         };
     }
 }
