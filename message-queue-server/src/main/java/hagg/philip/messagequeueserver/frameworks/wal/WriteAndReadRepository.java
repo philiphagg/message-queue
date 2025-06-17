@@ -1,4 +1,4 @@
-package hagg.philip.messagequeueserver.entity;
+package hagg.philip.messagequeueserver.frameworks.wal;
 
 public interface WriteAndReadRepository extends WriteRepository, ReadRepository {
 }

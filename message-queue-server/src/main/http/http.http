@@ -1,0 +1,18 @@
+### GET request to example server
+GET https://examples.http-client.intellij.net/get
+    ?generated-in=IntelliJ IDEA
+
+###
+
+POST http://localhost:8080/v1/producer/message
+Content-Type: application/json
+
+{
+  "key": "w3245tu6hytrgtefrw",
+  "topic": "Rfb8q1hz",
+  "message": "this is a new message"
+}
+
+###
+POST http://localhost:8080/v1?
+    topic={{$random.alphanumeric(8)}}

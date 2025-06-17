@@ -1,9 +1,10 @@
-package hagg.philip.messagequeueserver.entity;
+package hagg.philip.messagequeueserver.frameworks.wal;
 
 import hagg.philip.messagequeueserver.entity.QueueEntity;
-import hagg.philip.messagequeueserver.entity.WriteAndReadRepository;
+import hagg.philip.messagequeueserver.interfaces.producer.ProducerMessage;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Component;
+import org.springframework.util.StringValueResolver;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -13,16 +14,22 @@ import java.nio.file.StandardOpenOption;
 import java.time.Instant;
 import java.util.Base64;
 import java.util.Comparator;
+import java.util.List;
 import java.util.Optional;
+import java.util.stream.IntStream;
 import java.util.stream.Stream;
+
+import static java.util.Objects.hash;
 
 @Component
 public class WriteAheadLogWriteAndReadRepository implements WriteAndReadRepository {
+    public static final long ARBITRARY_MESSAGE_SIZE = 1024L;
     private final ApplicationEventPublisher applicationEventPublisher;
 
-    private Path filestore = Path.of("src", "main", "java", "hagg", "philip", "messagequeueserver", "domain", "filestore");
+    private Path filestore = Path.of("src", "main", "java", "hagg", "philip", "messagequeueserver", "filestore");
+    private final int partitions;
 
-    private long MAX_SEGMENT_SIZE = 1024; // 1 KB
+    private long MAX_SEGMENT_SIZE = 1024 * 1024;
     private static final String SEGMENT_FILE_EXTENSION = ".log";
     private static final String DELIMITER = "::";
     private static final Base64.Encoder ENCODER = Base64.getEncoder();
@@ -30,8 +37,8 @@ public class WriteAheadLogWriteAndReadRepository implements WriteAndReadReposito
 
     public WriteAheadLogWriteAndReadRepository(ApplicationEventPublisher applicationEventPublisher) {
         this.applicationEventPublisher = applicationEventPublisher;
+        this.partitions = 5; //TODO 2025-06-17 phihag: change later to create in create topic endpoint
     }
-
 
     @Override
     public QueueEntity read(String topic) {
@@ -61,22 +68,63 @@ public class WriteAheadLogWriteAndReadRepository implements WriteAndReadReposito
 
 
     @Override
-    public void write(QueueEntity entity) {
+    public void write(ProducerMessage message) {
         try {
-            Path topicPath = filestore.resolve(entity.topic());
-            Files.createDirectories(topicPath); // Ensure directory exists
+            int partitionNumber = hash(message.key()) % partitions;
+            String partition = "partition-" + partitionNumber;
+            Path topicPath = filestore.resolve(message.topic() ,partition );
+            Path activeSegment = getOrCreateActiveSegment(topicPath, ARBITRARY_MESSAGE_SIZE);
 
-            String newRow = serialize(entity);
-            byte[] newRowBytes = newRow.getBytes();
+            long offset = getNextOffset(activeSegment);
 
-            Path activeSegment = getOrCreateActiveSegment(topicPath, newRowBytes.length);
+            QueueEntity entity = new QueueEntity(
+                message.key(),
+                message.message().getBytes(),
+                message.topic(),
+                partitionNumber,
+                offset,
+                Instant.now()
+            );
 
-            Files.write(activeSegment, (newRow + System.lineSeparator()).getBytes(), StandardOpenOption.APPEND);
+            String serializedEntity = serialize(entity);
+
+            Files.write(activeSegment, (serializedEntity + System.lineSeparator()).getBytes(), StandardOpenOption.APPEND);
 
         } catch (IOException e) {
-            e.printStackTrace();
-            storeForRetry(entity).run();
+            System.out.println("Could not append to WAL, sent for retry");
+            storeForRetry(message).run();
         }
+    }
+
+    @Override
+    public void create(String topic) {
+        try {
+            Path topicPath = filestore.resolve(topic);
+            Files.createDirectories(topicPath);
+
+            for (int i = 0; i < partitions; i++) {
+                Path partitionPath = topicPath.resolve("partition-" + i);
+                Files.createDirectories(partitionPath);
+            }
+        } catch (IOException e) {
+            System.out.println("Directory already exists");
+        }
+    }
+
+    private long getNextOffset(Path segmentFile) throws IOException {
+        List<String> lines = Files.readAllLines(segmentFile);
+        if (lines.isEmpty()) {
+            return 0L;
+        }
+        String lastLine = "";
+        for (int i = lines.size() - 1; i >= 0; i--) {
+            if (!lines.get(i).isBlank()) {
+                lastLine = lines.get(i);
+                break;
+            }
+        }
+        String[] parts = lastLine.split(DELIMITER, -1);
+        return Long.parseLong(parts[4]) + 1L;
     }
 
     private Path getOrCreateActiveSegment(Path topicPath, long messageSize) throws IOException {
@@ -129,7 +177,7 @@ public class WriteAheadLogWriteAndReadRepository implements WriteAndReadReposito
         Integer partition = Integer.parseInt(parts[3]);
         long offset = Long.parseLong(parts[4]);
         Instant timestamp = Instant.ofEpochMilli(Long.parseLong(parts[5]));
-        return new QueueEntity(key, value, topic, partition, offset, timestamp);
+        return new QueueEntity(key.toString(), value, topic, partition, offset, timestamp);
     }
 
     private String serialize(QueueEntity entity) {
@@ -146,7 +194,7 @@ public class WriteAheadLogWriteAndReadRepository implements WriteAndReadReposito
         );
     }
 
-    private Runnable storeForRetry(QueueEntity entity) {
+    private Runnable storeForRetry(ProducerMessage entity) {
         return () -> {
             System.out.println("Failed to write to segment file for topic: " + entity.topic() + ". Publishing for retry.");
             applicationEventPublisher.publishEvent(entity);
