@@ -24,8 +24,8 @@ public class ProducerController {
     }
 
     @PostMapping
-    public ResponseEntity<String> createTopic(@RequestParam String topic) {
-        producerService.createTopic(topic);
+    public ResponseEntity<String> createTopic(@RequestParam String topic, @RequestParam(required = false) Integer partitionCount) {
+        producerService.createTopic(topic, partitionCount);
         return ResponseEntity.ok("Great Success");
     }
 

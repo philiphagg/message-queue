@@ -1,5 +1,6 @@
 package hagg.philip.messagequeueserver.usecase;
 
+import hagg.philip.messagequeueserver.entity.TopicDTO;
 import hagg.philip.messagequeueserver.frameworks.wal.WriteAndReadRepository;
 import hagg.philip.messagequeueserver.frameworks.wal.WriteRepository;
 import hagg.philip.messagequeueserver.interfaces.producer.ProducerMessage;
@@ -17,7 +18,7 @@ public class InboundService implements ProducerService {
         writeRepository.write(message);
     }
 
-    public void createTopic(String topic) {
-        writeRepository.create(topic);
+    public void createTopic(String topic, Integer partitionCount) {
+        writeRepository.create(new TopicDTO(topic, partitionCount));
     }
 }

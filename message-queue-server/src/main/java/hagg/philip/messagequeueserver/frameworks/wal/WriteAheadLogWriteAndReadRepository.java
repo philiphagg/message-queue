@@ -1,10 +1,10 @@
 package hagg.philip.messagequeueserver.frameworks.wal;
 
 import hagg.philip.messagequeueserver.entity.QueueEntity;
+import hagg.philip.messagequeueserver.entity.TopicDTO;
 import hagg.philip.messagequeueserver.interfaces.producer.ProducerMessage;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Component;
-import org.springframework.util.StringValueResolver;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -16,7 +16,6 @@ import java.util.Base64;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
-import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 import static java.util.Objects.hash;
@@ -27,7 +26,6 @@ public class WriteAheadLogWriteAndReadRepository implements WriteAndReadReposito
     private final ApplicationEventPublisher applicationEventPublisher;
 
     private Path filestore = Path.of("src", "main", "java", "hagg", "philip", "messagequeueserver", "filestore");
-    private final int partitions;
 
     private long MAX_SEGMENT_SIZE = 1024 * 1024;
     private static final String SEGMENT_FILE_EXTENSION = ".log";
@@ -37,7 +35,6 @@ public class WriteAheadLogWriteAndReadRepository implements WriteAndReadReposito
 
     public WriteAheadLogWriteAndReadRepository(ApplicationEventPublisher applicationEventPublisher) {
         this.applicationEventPublisher = applicationEventPublisher;
-        this.partitions = 5; //TODO 2025-06-17 phihag: change later to create in create topic endpoint
     }
 
     @Override
@@ -70,7 +67,7 @@ public class WriteAheadLogWriteAndReadRepository implements WriteAndReadReposito
     @Override
     public void write(ProducerMessage message) {
         try {
-            int partitionNumber = hash(message.key()) % partitions;
+            int partitionNumber = getPartitionNumber(message);
             String partition = "partition-" + partitionNumber;
             Path topicPath = filestore.resolve(message.topic() ,partition );
             Path activeSegment = getOrCreateActiveSegment(topicPath, ARBITRARY_MESSAGE_SIZE);
@@ -96,13 +93,31 @@ public class WriteAheadLogWriteAndReadRepository implements WriteAndReadReposito
         }
     }
 
+    private int getPartitionNumber(ProducerMessage message) {
+        int defaultPartitions = 5;
+        int partitionCount = defaultPartitions;
+        Path topicPath = filestore.resolve(message.topic());
+
+        if (Files.exists(topicPath) && Files.isDirectory(topicPath)) {
+            try (Stream<Path> stream = Files.list(topicPath)) {
+                long count = stream.filter(Files::isDirectory).count();
+                if (count > 0) {
+                    partitionCount = (int) count;
+                }
+            } catch (IOException e) {
+                System.out.println("Could not list partitions for topic " + message.topic() + ", defaulting to " + defaultPartitions);
+            }
+        }
+        return hash(message.key()) % partitionCount;
+    }
+
     @Override
-    public void create(String topic) {
+    public void create(TopicDTO topicDTO) {
         try {
-            Path topicPath = filestore.resolve(topic);
+            Path topicPath = filestore.resolve(topicDTO.topic());
             Files.createDirectories(topicPath);
 
-            for (int i = 0; i < partitions; i++) {
+            for (int i = 0; i < topicDTO.partitionCount(); i++) {
                 Path partitionPath = topicPath.resolve("partition-" + i);
                 Files.createDirectories(partitionPath);
             }
