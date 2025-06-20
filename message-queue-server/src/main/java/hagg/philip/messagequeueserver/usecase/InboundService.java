@@ -1,6 +1,6 @@
 package hagg.philip.messagequeueserver.usecase;
 
-import hagg.philip.messagequeueserver.entity.TopicDTO;
+import hagg.philip.messagequeueserver.interfaces.type.TopicDTO;
 import hagg.philip.messagequeueserver.frameworks.wal.WriteAndReadRepository;
 import hagg.philip.messagequeueserver.frameworks.wal.WriteRepository;
 import hagg.philip.messagequeueserver.interfaces.producer.ProducerMessage;

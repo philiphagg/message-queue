@@ -8,8 +8,8 @@ POST http://localhost:8080/v1/producer/message
 Content-Type: application/json
 
 {
-  "key": "w3245tu6hytrgtefrw",
-  "topic": "7p7kUNBI",
+  "key": "738921783921h3kj21bnkjh3b21hb3jk21",
+  "topic": "bSJPTxew",
   "message": "this is a new message"
 }
 

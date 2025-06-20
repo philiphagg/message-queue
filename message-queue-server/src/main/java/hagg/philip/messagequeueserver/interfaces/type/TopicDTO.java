@@ -1,4 +1,4 @@
-package hagg.philip.messagequeueserver.entity;
+package hagg.philip.messagequeueserver.interfaces.type;
 
 public record TopicDTO(
     String topic,

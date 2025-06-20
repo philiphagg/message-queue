@@ -1,7 +1,7 @@
 package hagg.philip.messagequeueserver.frameworks.wal;
 
-import hagg.philip.messagequeueserver.entity.QueueEntity;
+import hagg.philip.messagequeueserver.entity.Message;
 
 public interface ReadRepository {
-    QueueEntity read(String topic);
+    Message read(String topic);
 }

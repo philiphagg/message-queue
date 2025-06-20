@@ -1,7 +1,7 @@
 package hagg.philip.messagequeueserver.frameworks.wal;
 
-import hagg.philip.messagequeueserver.entity.QueueEntity;
-import hagg.philip.messagequeueserver.entity.TopicDTO;
+import hagg.philip.messagequeueserver.entity.Message;
+import hagg.philip.messagequeueserver.interfaces.type.TopicDTO;
 import hagg.philip.messagequeueserver.interfaces.producer.ProducerMessage;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Component;
@@ -21,7 +21,7 @@ import java.util.stream.Stream;
 import static java.util.Objects.hash;
 
 @Component
-public class WriteAheadLogWriteAndReadRepository implements WriteAndReadRepository {
+public class WriteAheadLog implements WriteAndReadRepository {
     public static final long ARBITRARY_MESSAGE_SIZE = 1024L;
     private final ApplicationEventPublisher applicationEventPublisher;
 
@@ -33,12 +33,12 @@ public class WriteAheadLogWriteAndReadRepository implements WriteAndReadReposito
     private static final Base64.Encoder ENCODER = Base64.getEncoder();
     private static final Base64.Decoder DECODER = Base64.getDecoder();
 
-    public WriteAheadLogWriteAndReadRepository(ApplicationEventPublisher applicationEventPublisher) {
+    public WriteAheadLog(ApplicationEventPublisher applicationEventPublisher) {
         this.applicationEventPublisher = applicationEventPublisher;
     }
 
     @Override
-    public QueueEntity read(String topic) {
+    public Message read(String topic) {
         Path topicPath = filestore.resolve(topic);
         if (!Files.exists(topicPath)) {
             return null;
@@ -74,7 +74,7 @@ public class WriteAheadLogWriteAndReadRepository implements WriteAndReadReposito
 
             long offset = getNextOffset(activeSegment);
 
-            QueueEntity entity = new QueueEntity(
+            Message entity = new Message(
                 message.key(),
                 message.message().getBytes(),
                 message.topic(),
@@ -181,7 +181,7 @@ public class WriteAheadLogWriteAndReadRepository implements WriteAndReadReposito
         return Long.parseLong(segmentIdStr);
     }
 
-    private QueueEntity deserialize(String line) {
+    private Message deserialize(String line) {
         String[] parts = line.split(DELIMITER, -1);
         if (parts.length != 7) {
             throw new IllegalArgumentException("Invalid log entry format. Expected 7 parts, but got " + parts.length);
@@ -192,10 +192,10 @@ public class WriteAheadLogWriteAndReadRepository implements WriteAndReadReposito
         Integer partition = Integer.parseInt(parts[3]);
         long offset = Long.parseLong(parts[4]);
         Instant timestamp = Instant.ofEpochMilli(Long.parseLong(parts[5]));
-        return new QueueEntity(key.toString(), value, topic, partition, offset, timestamp);
+        return new Message(key.toString(), value, topic, partition, offset, timestamp);
     }
 
-    private String serialize(QueueEntity entity) {
+    private String serialize(Message entity) {
         String keyBase64 = entity.key() != null ? ENCODER.encodeToString(entity.key()) : "";
         String valueBase64 = ENCODER.encodeToString(entity.value());
         return String.join(DELIMITER,
